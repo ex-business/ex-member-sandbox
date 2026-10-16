@@ -60,3 +60,37 @@ go vet ./...
 测试覆盖注册事务、重复邮箱不覆盖邀请、上游失败原事件重试、签名、租约恢复与旧结果隔离、永久拒绝、重启持久性、登录退出、同源防护及敏感字段不泄漏。真实本地佣金联调另外验证根代理→邀请链接→子会员注册→直属及祖先链一致性，不将测试桩当成真实集成结果。
 
 【涉及其他业务】对接 ExCommission 的注册来源、用户映射和代理关系。仅供本地测试，不接真实会员平台、充值、提款、钱包、投注或发奖；不宣称具备生产身份或容量保障。当前使用显式授权的本地沙箱身份，真实部署需要独立来源和服务身份。
+
+## 独立有效会员事实适配工具
+
+`tools/qualification_source.py` 是可选的本地来源适配器，不改会员注册服务、原注册 outbox 或会员数据库表结构。它只读确认会员存在，合成成功充值/已结算有效投注事实，并保存到另一个 `.local/qualification-source.db` 后签名投递。它不充值真实钱包，不创建真实游戏订单。
+
+先启动启用 `LOCAL_QUALIFICATION_ENABLED=true` 的佣金扩展服务，再显式生成私有配置：
+
+```sh
+python3 tools/qualification_source.py init \
+  --commission-config /本地佣金扩展目录/.local/runtime.json \
+  --member-config /正在运行的会员项目/.local/config.json
+python3 tools/qualification_source.py create-policy \
+  --deposit-minor 5000 --valid-bet-minor 10000 --venue SPORTS
+```
+
+上述门槛表示充值50 USD且有效投注100 USD。规则不可覆盖，后续新规则在初始化时指定新的 `--policy-id`；不能只改门槛覆盖已有规则。
+
+登记一笔模拟成功充值和一笔模拟已结算有效投注：
+
+```sh
+python3 tools/qualification_source.py record --member-id 现有会员编号 \
+  --business-id demo-deposit-001 --type DEPOSIT_SUCCEEDED --amount-minor 5000
+python3 tools/qualification_source.py record --member-id 现有会员编号 \
+  --business-id demo-bet-001 --type BET_SETTLED --amount-minor 10000 --venue SPORTS
+python3 tools/qualification_source.py query --member-id 现有会员编号
+```
+
+`DELIVERED`仅表示事实被达标模块接受，应以查询的 `is_effective`、`qualified_at` 判断是否满足双门槛；无邀请归属的根会员不算受邀有效会员。此工具未接入原网页，因此原会员页面不会自动新增达标信息。
+
+同一业务号重复执行保留首次业务时间和原载荷；改变金额、会员或场馆拒绝。网络故障保留PENDING，可以执行 `deliver` 按原事件重试；4xx业务错误保留BLOCKED，修复依赖或配置后显式执行 `deliver --retry-blocked`。这个CLI不带后台调度，不伪装自动持续重试，生产来源需要可靠outbox消费者。租户/应用/来源/规则/币种指纹隔离已有源事实，配置变化不会误投旧作用域数据。
+
+适配器测试：`python3 tools/test_qualification_source.py`，覆盖原事件重试、订单不可覆盖、未知会员拒绝、永久错误保留及跨作用域隔离。真实联调已验证充值30、投注100仍未达标，再充值20达标，重复订单不增加累计。退款、注单撤销和资格撤回未实现，不应发送负金额或覆盖旧事实。
+
+【涉及其他业务】新增事实来源只调用佣金有效会员模块；原注册、会话、会员表及钱包逻辑未修改。新增代码位于独立功能分支，与原运行实例隔离。
