@@ -145,6 +145,10 @@ func (i *Identity) Handler() http.Handler {
 				fail(w, 503, "身份接入暂不可用")
 				return
 			}
+			// 代理展示登录审计与凭据事务隔离；审计异常不改变登录结果，也不输出令牌。
+			if auditErr := i.Store.RecordAffiliateLogin(r.Context(), id, r.RemoteAddr, i.Now()); auditErr != nil {
+				slog.Warn("代理登录展示审计未完成", "request_id", w.Header().Get("X-Request-ID"), "member_id", id, "error", auditErr)
+			}
 			slog.Info("会员身份接入登录成功", "request_id", w.Header().Get("X-Request-ID"), "member_id", id, "result", "SUCCEEDED")
 			reply(w, 200, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": 3600})
 		case "/integration/introspect", "/integration/revoke":

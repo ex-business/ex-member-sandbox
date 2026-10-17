@@ -127,3 +127,11 @@ python3 tools/affiliate_source_runner.py --config .local/affiliate-source.json
 任务默认每5秒重试待发送事实，并按已发布站点时区自动关闭已经结束的自然日；日结仍由佣金服务worker在站点01:00执行。`--once`可运行一次，`--interval`最少1秒。同一来源库只允许一个任务，退出后锁自动释放。
 
 首次运行从库内最早事实日期开始，无事实则从当日开始；此后持久化游标，支持空业务日及重启补关账，每轮最多31日。存在PENDING/BLOCKED事实时不宣布该日完整，也不推进后续日期。永久拒绝需先修正原因，再人工使用原CLI的`deliver --retry-blocked`。时区变化会停止推进，需核对历史日期后迁移来源游标。运行配置和来源库含凭据或业务数据，保持在私有目录，不提交Git。
+
+### 代理展示资料导出
+
+`go run ./cmd/affiliate-profile --config <私有会员配置> --out <私有快照.json> --interval 5s` 将本站会员资料原子写入0600文件。省略interval只导出一次，常驻间隔至少1秒。佣金后端用 `AFFILIATE_MEMBER_CATALOG_FILE` 读取该文件；按source_id/external_user_id映射，不改内部账务ID。
+
+独立affiliate_profiles表生成稳定7位展示ID，VIP与头像未提供时保持空。成功身份登录后记录实际连接IP/时间，审计失败只告警；经BFF访问时记录BFF连接地址。快照不含邮箱、密码、令牌，不提交到Git。VIP、头像应由权威会员业务补充，不因代理展示生成VIP权益。
+
+【涉及其他业务】原身份登录调用链增加独立展示审计；不更改凭据校验、令牌、撤销、过期或登录响应。专项及原身份测试覆盖审计异常不影响登录。
