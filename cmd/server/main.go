@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"ex-member-sandbox/internal/app"
 	"flag"
 	"log/slog"
@@ -17,7 +18,10 @@ import (
 	"time"
 )
 
-type Config struct{ Listen, PublicURL, Database, CommissionURL, CommissionToken, RegistrationKey, Tenant, App, Source string }
+type Config struct {
+	Listen, PublicURL, Database, CommissionURL, CommissionToken, RegistrationKey, Tenant, App, Source   string
+	IdentityListen, IdentityClientID, IdentitySecret, IdentityIssuer, IdentityAudience, MemberPortalURL string
+}
 
 func main() {
 	configFile := flag.String("config", ".local/config.json", "本地私有配置文件")
@@ -56,7 +60,44 @@ func main() {
 	commission := &app.Commission{URL: strings.TrimRight(cfg.CommissionURL, "/"), Token: cfg.CommissionToken, Key: cfg.RegistrationKey, Tenant: cfg.Tenant, App: cfg.App, Source: cfg.Source, Client: client}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err = app.Serve(ctx, cfg.Listen, app.NewServer(store, commission, cfg.PublicURL)); err != nil {
+	// 身份接入独立监听，只有持有接入密钥的服务端可以使用；不放宽浏览器入口的同源限制。
+	if cfg.IdentityListen != "" {
+		host, _, e := net.SplitHostPort(cfg.IdentityListen)
+		ip := net.ParseIP(host)
+		if e != nil || ip == nil || !ip.IsLoopback() {
+			slog.Error("身份接入必须监听回环地址")
+			os.Exit(1)
+		}
+		identity := &app.Identity{Store: store, ClientID: cfg.IdentityClientID, Secret: cfg.IdentitySecret, Issuer: cfg.IdentityIssuer, Audience: cfg.IdentityAudience, Tenant: cfg.Tenant, App: cfg.App, Source: cfg.Source}
+		if err := identity.Prepare(ctx); err != nil {
+			slog.Error("身份接入初始化失败", "error", err)
+			os.Exit(1)
+		}
+		server := &http.Server{Addr: cfg.IdentityListen, Handler: identity.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+		go func() {
+			<-ctx.Done()
+			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = server.Shutdown(shutdown)
+		}()
+		go func() {
+			slog.Info("会员身份接入已启动", "address", cfg.IdentityListen)
+			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("会员身份接入退出", "error", err)
+				stop()
+			}
+		}()
+	}
+	memberServer := app.NewServer(store, commission, cfg.PublicURL)
+	if cfg.MemberPortalURL != "" {
+		u, e := url.Parse(cfg.MemberPortalURL)
+		if e != nil || u.Scheme != "http" || u.User != nil || net.ParseIP(u.Hostname()) == nil || !net.ParseIP(u.Hostname()).IsLoopback() {
+			slog.Error("会员中心地址必须为本地回环地址")
+			os.Exit(1)
+		}
+		memberServer.MemberPortalURL = cfg.MemberPortalURL
+	}
+	if err = app.Serve(ctx, cfg.Listen, memberServer); err != nil {
 		slog.Error("临时会员服务退出", "error", err)
 		os.Exit(1)
 	}

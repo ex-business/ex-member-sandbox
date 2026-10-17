@@ -51,7 +51,7 @@ func (c *Commission) Invitation(ctx context.Context, m Member, publicURL string)
 		return "", errors.New("代理身份尚未同步完成")
 	}
 	raw, _ := json.Marshal(map[string]string{"source_id": c.Source, "agent_id": m.AgentID})
-	status, body, err := c.call(ctx, "/v1/registration-invitations", "member-invite-"+m.ID, raw, false)
+	status, body, err := c.call(ctx, "/v1/registration-invitations", "member-invite-v2-"+m.ID, raw, false)
 	if err != nil || status != 200 {
 		return "", errors.New("邀请链接暂不可用，请稍后重试")
 	}

@@ -31,12 +31,13 @@ type Session struct {
 	Expires  time.Time
 }
 type Server struct {
-	Store      *Store
-	Commission *Commission
-	PublicURL  string
-	mu         sync.Mutex
-	sessions   map[string]Session
-	attempts   map[string]attempt
+	Store           *Store
+	Commission      *Commission
+	PublicURL       string
+	MemberPortalURL string
+	mu              sync.Mutex
+	sessions        map[string]Session
+	attempts        map[string]attempt
 }
 type attempt struct {
 	Count int
@@ -143,6 +144,12 @@ func (s *Server) Handler() http.Handler {
 			}
 			http.SetCookie(w, &http.Cookie{Name: "member_session", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 			reply(w, 200, map[string]bool{"ok": true})
+		case "GET /api/member-portal":
+			if _, ok := s.session(r); !ok {
+				fail(w, 401, "请先注册或登录")
+				return
+			}
+			reply(w, 200, map[string]string{"url": s.MemberPortalURL})
 		case "GET /api/me":
 			id, ok := s.session(r)
 			if !ok {
