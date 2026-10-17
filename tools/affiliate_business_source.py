@@ -79,6 +79,29 @@ def deliver(c,db,retry_blocked=False):
         elif 400<=status<500 and status not in [408,429]:state='BLOCKED';code=body.get('error',{}).get('code',str(status))
         db.execute('UPDATE facts SET state=?,attempts=attempts+1,last_code=? WHERE kind=? AND business_id=?',(state,code,row['kind'],row['business_id']));db.commit()
 
+def close_business_day(c,db,day,zone):
+    """仅在全部事实已确认后提交不可变清单；失败保留本地状态供重试。"""
+    # 关账与CLI写入共享SQLite写锁，清单读取至远端确认之间禁止插入未确认事实。
+    # 提交后的新事实由后端按迟到调整处理；网络失败则回滚，允许原日重试。
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        date=dt.date.fromisoformat(day);parts=[]
+        for row in db.execute('SELECT * FROM facts'):
+            e=json.loads(row['payload'])
+            if instant(e['business_time']).astimezone(zone).date()!=date:continue
+            if row['state'] not in ['DELIVERED','LATE_ADJUSTMENT']:raise ValueError('该日仍有未送达或被拒绝事实，禁止宣布来源完整')
+            if row['state']=='DELIVERED':parts.append(e['kind']+'\n'+e['business_id']+'\n'+business_hash(e))
+        parts.sort();watermark=dict(source_id=c['source'],business_day=day,fact_count=len(parts),facts_digest=digest(parts))
+        old=db.execute('SELECT payload FROM watermarks WHERE day=?',(day,)).fetchone()
+        if old and json.loads(old[0])!=watermark:raise ValueError('已提交来源日结清单不可改写')
+        status,body=request(c,'/v1/affiliate/source-watermarks',watermark,'affiliate-watermark-v1')
+        if status!=200:raise ValueError('来源日结未被接受：'+body.get('error',{}).get('code',str(status)))
+        db.execute("INSERT INTO watermarks VALUES(?,?,'SOURCE_CLOSED') ON CONFLICT(day) DO NOTHING",(day,dump(watermark)));db.commit();print(dump({'来源':c['source'],'业务日':day,'事实数':len(parts),'处理结果':'来源关账成功，等待日终结算'}),flush=True)
+    except Exception:
+        db.rollback()
+        raise
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--config',default=str(ROOT/'.local/affiliate-source.json'))
     sub=parser.add_subparsers(dest='command',required=True)
@@ -130,18 +153,7 @@ def main(argv=None):
         elif args.command=='close-day':
             status,profile=request(c,'/v1/affiliate/config')
             if status!=200 or not profile.get('data',{}).get('current'):raise ValueError('站点尚无生效配置')
-            zone=ZoneInfo(profile['data']['current']['config']['timezone']);date=dt.date.fromisoformat(args.day);parts=[]
-            for row in db.execute('SELECT * FROM facts'):
-                e=json.loads(row['payload'])
-                if instant(e['business_time']).astimezone(zone).date()!=date:continue
-                if row['state'] not in ['DELIVERED','LATE_ADJUSTMENT']:raise ValueError('该日仍有未送达或被拒绝事实，禁止宣布来源完整')
-                if row['state']=='DELIVERED':parts.append(e['kind']+'\n'+e['business_id']+'\n'+business_hash(e))
-            parts.sort();watermark=dict(source_id=c['source'],business_day=args.day,fact_count=len(parts),facts_digest=digest(parts))
-            old=db.execute('SELECT payload FROM watermarks WHERE day=?',(args.day,)).fetchone()
-            if old and json.loads(old[0])!=watermark:raise ValueError('已提交来源日结清单不可改写')
-            status,body=request(c,'/v1/affiliate/source-watermarks',watermark,'affiliate-watermark-v1')
-            if status!=200:raise ValueError('来源日结未被接受：'+body.get('error',{}).get('code',str(status)))
-            db.execute("INSERT INTO watermarks VALUES(?,?,'SOURCE_CLOSED') ON CONFLICT(day) DO NOTHING",(args.day,dump(watermark)));db.commit();print('来源业务日清单核对成功，等待日终任务按站点时间结算。')
+            close_business_day(c,db,args.day,ZoneInfo(profile['data']['current']['config']['timezone']))
         states={row[0]:row[1] for row in db.execute('SELECT state,COUNT(*) FROM facts GROUP BY state')};print(json.dumps(states,ensure_ascii=False))
 if __name__=='__main__':
     try:main()
