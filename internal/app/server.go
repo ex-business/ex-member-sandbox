@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"ex-member-sandbox/internal/ingressproof"
+	"ex-member-sandbox/internal/simulation"
 	"io"
 	"log/slog"
 	driver "modernc.org/sqlite"
+	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -33,6 +35,7 @@ type Session struct {
 	Expires  time.Time
 }
 type Server struct {
+	Simulation      *simulation.Source
 	Store           *Store
 	Commission      *Commission
 	PublicURL       string
@@ -130,6 +133,10 @@ func (s *Server) Handler() http.Handler {
 				return
 			}
 		}
+		// 模拟业务路由仍经过既有Host和Origin校验，身份限制由独立处理器执行。
+		if s.handleSimulation(w, r) {
+			return
+		}
 		switch r.Method + " " + r.URL.Path {
 		case "GET /healthz":
 			reply(w, 200, map[string]string{"status": "ok", "mode": "local-sandbox"})
@@ -180,12 +187,29 @@ func (s *Server) Handler() http.Handler {
 				fail(w, 401, "请先登录")
 				return
 			}
-			items, err := s.Store.Members(r.Context())
+			page, size, explicit, pageErr := pageRequest(r)
+			if pageErr != nil {
+				fail(w, 400, pageErr.Error())
+				return
+			}
+			var params []int
+			if explicit {
+				params = []int{size + 1, (page - 1) * size}
+			}
+			items, err := s.Store.Members(r.Context(), params...)
 			if err != nil {
 				fail(w, 503, "会员列表暂不可用")
 				return
 			}
-			reply(w, 200, map[string]any{"items": items})
+			if explicit {
+				more := len(items) > size
+				if more {
+					items = items[:size]
+				}
+				reply(w, 200, map[string]any{"items": items, "page": page, "page_size": size, "has_more": more})
+			} else {
+				reply(w, 200, map[string]any{"items": items})
+			}
 		case "POST /api/invitation":
 			id, ok := s.session(r)
 			if !ok {
@@ -328,7 +352,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, m)
 }
 
-func Serve(ctx context.Context, addr string, s *Server) error {
+func Serve(ctx context.Context, addr string, s *Server, onReady ...func(context.Context) func()) error {
 	server := &http.Server{Addr: addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	go s.Commission.Run(ctx, s.Store)
 	go func() {
@@ -337,8 +361,20 @@ func Serve(ctx context.Context, addr string, s *Server) error {
 		defer cancel()
 		_ = server.Shutdown(shutdown)
 	}()
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	for _, hook := range onReady {
+		if hook != nil {
+			if closeRegistration := hook(ctx); closeRegistration != nil {
+				defer closeRegistration()
+			}
+		}
+	}
 	slog.Info("临时会员服务已启动", "address", addr)
-	err := server.ListenAndServe()
+	err = server.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

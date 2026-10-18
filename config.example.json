@@ -7,5 +7,6 @@
   "RegistrationKey": "请填写本地沙箱的独立注册签名密钥",
   "Tenant": "local-sandbox",
   "App": "commission",
-  "Source": "sandbox"
+  "Source": "sandbox",
+  "SimulationSourceFile": ""
 }

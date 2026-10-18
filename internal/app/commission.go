@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	routersdk "github.com/ex-business/ex-service-router/sdk"
 	"io"
 	"log/slog"
 	"net/http"
@@ -38,7 +39,7 @@ func (c *Commission) call(ctx context.Context, path, key string, raw []byte, sig
 		mac.Write(raw)
 		req.Header.Set("X-Registration-Signature", hex.EncodeToString(mac.Sum(nil)))
 	}
-	res, err := c.Client.Do(req)
+	res, err := routersdk.Do(c.Client, req)
 	if err != nil {
 		return 0, nil, err
 	}

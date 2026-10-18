@@ -87,9 +87,13 @@ func (s *Store) Member(ctx context.Context, id string) (Member, error) {
 	}
 	return m, err
 }
-func (s *Store) Members(ctx context.Context) ([]Member, error) {
-	// 仅本地演示列表，最多100条；不返回其他会员邮箱、密码或签名凭据。
-	rows, err := s.DB.QueryContext(ctx, `SELECT m.id,m.name,m.registered_at,o.status,o.agent_id,o.parent_id,o.last_code FROM members m JOIN registration_outbox o ON o.member_id=m.id ORDER BY m.registered_at DESC LIMIT 100`)
+func (s *Store) Members(ctx context.Context, pagination ...int) ([]Member, error) {
+	// 只返回原允许的展示字段；分页不放宽会员资料字段或登录限制。
+	limit, offset := 100, 0
+	if len(pagination) == 2 {
+		limit, offset = pagination[0], pagination[1]
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT m.id,m.name,m.registered_at,o.status,o.agent_id,o.parent_id,o.last_code FROM members m JOIN registration_outbox o ON o.member_id=m.id ORDER BY m.registered_at DESC,m.id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
 	}

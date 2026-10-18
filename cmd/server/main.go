@@ -6,6 +6,7 @@ import (
 	"errors"
 	"ex-member-sandbox/internal/app"
 	"flag"
+	"github.com/ex-business/ex-service-router/sdk"
 	"log/slog"
 	"net"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 )
 
 type Config struct {
+	SimulationSourceFile                                                                                string
 	Listen, PublicURL, Database, CommissionURL, CommissionToken, RegistrationKey, Tenant, App, Source   string
 	IdentityListen, IdentityClientID, IdentitySecret, IdentityIssuer, IdentityAudience, MemberPortalURL string
 }
@@ -81,8 +83,17 @@ func main() {
 			_ = server.Shutdown(shutdown)
 		}()
 		go func() {
+			listener, e := net.Listen("tcp", server.Addr)
+			if e != nil {
+				slog.Error("会员身份监听失败，未执行自注册", "error", e)
+				stop()
+				return
+			}
+			defer listener.Close()
+			closeRegistration := sdk.StartFromEnv(ctx, "EX_SERVICE_ROUTER_IDENTITY_CONFIG", store.DB.PingContext)
+			defer closeRegistration()
 			slog.Info("会员身份接入已启动", "address", cfg.IdentityListen)
-			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("会员身份接入退出", "error", err)
 				stop()
 			}
@@ -97,7 +108,21 @@ func main() {
 		}
 		memberServer.MemberPortalURL = cfg.MemberPortalURL
 	}
-	if err = app.Serve(ctx, cfg.Listen, memberServer); err != nil {
+	// 默认不启用模拟入口；显式配置后复用已有来源事件库，保持来源与会员作用域一致。
+	if cfg.SimulationSourceFile != "" {
+		simulator, e := app.LoadSimulation(cfg.SimulationSourceFile, cfg.Database, commission, store)
+		if e != nil {
+			slog.Error("初始化事件模拟失败", "error", e)
+			os.Exit(1)
+		}
+		memberServer.Simulation = simulator
+		done := make(chan struct{})
+		go func() { defer close(done); simulator.Run(ctx) }()
+		defer func() { stop(); <-done; simulator.Close() }()
+	}
+	if err = app.Serve(ctx, cfg.Listen, memberServer, func(c context.Context) func() {
+		return sdk.StartFromEnv(c, "EX_SERVICE_ROUTER_CONFIG", store.DB.PingContext)
+	}); err != nil {
 		slog.Error("临时会员服务退出", "error", err)
 		os.Exit(1)
 	}
