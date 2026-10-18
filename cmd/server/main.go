@@ -42,7 +42,7 @@ func main() {
 	ip := net.ParseIP(host)
 	public, e1 := url.Parse(cfg.PublicURL)
 	upstream, e2 := url.Parse(cfg.CommissionURL)
-	if err != nil || ip == nil || !ip.IsLoopback() || e1 != nil || e2 != nil || public.Scheme != "http" || public.Host != cfg.Listen || public.Path != "/" || public.RawQuery != "" || public.Fragment != "" || public.User != nil || upstream.Scheme != "http" || net.ParseIP(upstream.Hostname()) == nil || !net.ParseIP(upstream.Hostname()).IsLoopback() || upstream.User != nil || upstream.RawQuery != "" || upstream.Fragment != "" || upstream.Path != "" || len(cfg.CommissionToken) < 32 || len(cfg.RegistrationKey) < 32 || cfg.Tenant == "" || cfg.App == "" || cfg.Source == "" {
+	if err != nil || ip == nil || !ip.IsLoopback() || e1 != nil || e2 != nil || public.Scheme != "http" || public.Hostname() != host || public.Path != "/" || public.RawQuery != "" || public.Fragment != "" || public.User != nil || upstream.Scheme != "http" || net.ParseIP(upstream.Hostname()) == nil || !net.ParseIP(upstream.Hostname()).IsLoopback() || upstream.User != nil || upstream.RawQuery != "" || upstream.Fragment != "" || upstream.Path != "" || len(cfg.CommissionToken) < 32 || len(cfg.RegistrationKey) < 32 || cfg.Tenant == "" || cfg.App == "" || cfg.Source == "" {
 		slog.Error("配置无效：仅支持完整的本地回环地址及受控来源")
 		os.Exit(1)
 	}

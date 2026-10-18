@@ -137,3 +137,12 @@ python3 tools/affiliate_source_runner.py --config .local/affiliate-source.json
 独立affiliate_profiles表生成稳定7位展示ID，VIP与头像未提供时保持空。成功身份登录后记录实际连接IP/时间，审计失败只告警；经BFF访问时记录BFF连接地址。快照不含邮箱、密码、令牌，不提交到Git。VIP、头像应由权威会员业务补充，不因代理展示生成VIP权益。
 
 【涉及其他业务】原身份登录调用链增加独立展示审计；不更改凭据校验、令牌、撤销、过期或登录响应。专项及原身份测试覆盖审计异常不影响登录。
+
+
+## 受信网关入口
+
+启用 `WEB_ENTRY_KEY` 后，浏览器入口必须携带网关签署的来源证明；密钥仅配置在网关和该Web服务端，长度至少32，不进入仓库。证明绑定原始Host、路径、方法、正文、实际来源IP和时间，浏览器不能自行填写转发头绕过。
+
+`WEB_PUBLIC_ORIGINS` 可配置固定HTTPS来源的JSON数组，例如 `["https://app.example.com"]`。只有入口证明校验通过后才接受该来源，并给会话Cookie增加Secure；保留原HTTP配置时，仍按原方式处理。外部Origin与内部监听端口分开，私有监听仅允许网关访问。
+
+【涉及其他业务】影响本站登录来源、会话Cookie及来源IP。原业务角色、站点授权和CSRF继续校验；该接入不代表Web会话或数据库已多节点化。入口高可用配置参考 ex-service-gateway 的 `docs/入口高可用.md`。

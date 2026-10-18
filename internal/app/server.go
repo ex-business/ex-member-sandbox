@@ -11,12 +11,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"ex-member-sandbox/internal/ingressproof"
 	"io"
 	"log/slog"
 	driver "modernc.org/sqlite"
 	"net/http"
 	"net/mail"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -100,7 +102,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	token := ID()
 	s.sessions[token] = Session{MemberID: id, Expires: time.Now().Add(8 * time.Hour)}
-	http.SetCookie(w, &http.Cookie{Name: "member_session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 28800})
+	http.SetCookie(w, &http.Cookie{Name: "member_session", Value: token, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(ingressproof.PublicOrigin(r, s.PublicURL), "https://"), SameSite: http.SameSiteStrictMode, MaxAge: 28800})
 }
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -110,8 +112,13 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		// 启用入口模式时必须先验证网关来源，未启用时保留原有直连兼容。
+		if err := ingressproof.Verify(r, os.Getenv("WEB_ENTRY_KEY"), 1<<20); err != nil {
+			fail(w, 403, "请求须经受信网关入口")
+			return
+		}
 		// 固定本机Host且所有写入必须同源，防止恶意网页借浏览器访问本地服务。
-		expected, _ := url.Parse(s.PublicURL)
+		expected, _ := url.Parse(ingressproof.PublicOrigin(r, s.PublicURL))
 		if r.Host != expected.Host {
 			fail(w, 403, "请求主机不匹配")
 			return
@@ -142,14 +149,20 @@ func (s *Server) Handler() http.Handler {
 				delete(s.sessions, c.Value)
 				s.mu.Unlock()
 			}
-			http.SetCookie(w, &http.Cookie{Name: "member_session", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+			http.SetCookie(w, &http.Cookie{Name: "member_session", Value: "", Path: "/", HttpOnly: true, Secure: strings.HasPrefix(ingressproof.PublicOrigin(r, s.PublicURL), "https://"), SameSite: http.SameSiteStrictMode, MaxAge: -1})
 			reply(w, 200, map[string]bool{"ok": true})
 		case "GET /api/member-portal":
 			if _, ok := s.session(r); !ok {
 				fail(w, 401, "请先注册或登录")
 				return
 			}
-			reply(w, 200, map[string]string{"url": s.MemberPortalURL})
+			portal := s.MemberPortalURL
+			if strings.HasPrefix(ingressproof.PublicOrigin(r, s.PublicURL), "https://") {
+				if configured := ingressproof.ConfiguredHTTPS("WEB_MEMBER_PORTAL_URL"); configured != "" {
+					portal = configured + "/"
+				}
+			}
+			reply(w, 200, map[string]string{"url": portal})
 		case "GET /api/me":
 			id, ok := s.session(r)
 			if !ok {
@@ -184,7 +197,7 @@ func (s *Server) Handler() http.Handler {
 				fail(w, 503, "会员信息暂不可用")
 				return
 			}
-			link, err := s.Commission.Invitation(r.Context(), m, s.PublicURL)
+			link, err := s.Commission.Invitation(r.Context(), m, ingressproof.PublicOrigin(r, s.PublicURL)+"/")
 			if err != nil {
 				fail(w, 409, err.Error())
 				return
